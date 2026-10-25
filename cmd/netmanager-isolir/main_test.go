@@ -5,9 +5,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"io"
 	"log"
 	"math/big"
 	"net"
@@ -85,14 +85,15 @@ func TestFailedTLSHandshakeLogsNothing(t *testing.T) {
 	go s.ServeTLS(ln, certFile, keyFile)
 	defer s.Close()
 
-	// A TLS 1.0 client makes the server's handshake fail, which net/http
+	// A malformed ClientHello fails the server's handshake, which net/http
 	// would log by default.
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 2 * time.Second}, "tcp", ln.Addr().String(),
-		&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS10, MaxVersion: tls.VersionTLS10})
-	if err == nil {
-		conn.Close()
-		t.Fatal("handshake should fail")
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
 	}
+	conn.Write([]byte{0x16, 0x03, 0x01, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00})
+	io.Copy(io.Discard, conn)
+	conn.Close()
 	time.Sleep(100 * time.Millisecond)
 	if logged.Len() != 0 {
 		t.Errorf("handshake failure was logged: %q", logged.String())
