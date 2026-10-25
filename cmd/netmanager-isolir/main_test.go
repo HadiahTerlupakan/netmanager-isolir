@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"log"
@@ -84,10 +85,13 @@ func TestFailedTLSHandshakeLogsNothing(t *testing.T) {
 	go s.ServeTLS(ln, certFile, keyFile)
 	defer s.Close()
 
-	// A client that rejects the self-signed certificate, as customer apps do.
-	_, err = (&http.Client{Timeout: 2 * time.Second}).Get("https://" + ln.Addr().String() + "/")
+	// A TLS 1.0 client makes the server's handshake fail, which net/http
+	// would log by default.
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 2 * time.Second}, "tcp", ln.Addr().String(),
+		&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS10, MaxVersion: tls.VersionTLS10})
 	if err == nil {
-		t.Fatal("handshake should fail on the untrusted certificate")
+		conn.Close()
+		t.Fatal("handshake should fail")
 	}
 	time.Sleep(100 * time.Millisecond)
 	if logged.Len() != 0 {
