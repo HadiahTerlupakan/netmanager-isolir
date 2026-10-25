@@ -5,6 +5,7 @@ package page
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -67,6 +68,10 @@ func (f *httpFetcher) Fetch(ctx context.Context, address, etag string) (Result, 
 		}
 		if len(body) > maxBodyBytes {
 			return Result{}, fmt.Errorf("netmanager page larger than %d bytes", maxBodyBytes)
+		}
+		// A blank page cached for ttl would replace the last good copy.
+		if len(body) == 0 {
+			return Result{}, errors.New("netmanager answered 200 with an empty page")
 		}
 		return Result{HTML: body, ETag: resp.Header.Get("ETag")}, nil
 	default:

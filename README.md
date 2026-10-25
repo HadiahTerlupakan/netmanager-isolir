@@ -4,7 +4,8 @@ Layanan kecil yang menampilkan halaman isolir kepada pelanggan yang layanannya
 dihentikan. Router VPN mengarahkan lalu lintas HTTP/HTTPS pelanggan terisolir
 ke layanan ini; layanan mengambil halamannya dari netmanager
 (`GET /api/internal/isolir/page?address=<ipv4>`), menyimpannya di cache (60
-detik, dipakai sampai 24 jam bila netmanager gagal), lalu memakai halaman
+detik, dipakai sampai 24 jam bila netmanager gagal; salinan lama langsung
+dikirim sementara pembaruannya berjalan di latar), lalu memakai halaman
 cadangan bila belum pernah berhasil. Tidak ada database, dan tidak ada koneksi
 keluar selain ke netmanager.
 

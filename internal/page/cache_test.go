@@ -53,6 +53,16 @@ func newTestCache(f Fetcher, clk *fakeClock) *Cache {
 	return NewCache(f, testTTL, testStale, testTimeout, clk.now)
 }
 
+// waitRefresh blocks until the background refresh for address, if any, ends.
+func waitRefresh(c *Cache, address string) {
+	c.mu.Lock()
+	cl := c.inflight[address]
+	c.mu.Unlock()
+	if cl != nil {
+		<-cl.done
+	}
+}
+
 func TestCacheServesFromCacheWithinTTL(t *testing.T) {
 	f, clk := okFetcher("A"), &fakeClock{}
 	c := newTestCache(f, clk)
@@ -76,6 +86,7 @@ func TestCacheRevalidatesWithETagAndNotModifiedExtends(t *testing.T) {
 	if got := c.Page(context.Background(), addr); string(got) != "A" {
 		t.Fatalf("got %q", got)
 	}
+	waitRefresh(c, addr)
 	if f.etags[1] != `"v1"` {
 		t.Fatalf("etag sent = %q", f.etags[1])
 	}
@@ -94,6 +105,10 @@ func TestCacheReplacesHTMLOnNewVersion(t *testing.T) {
 		return Result{HTML: []byte("B"), ETag: `"v2"`}, nil
 	}
 	clk.advance(61 * time.Second)
+	if got := c.Page(context.Background(), addr); string(got) != "A" {
+		t.Fatalf("expired entry should be served while refreshing, got %q", got)
+	}
+	waitRefresh(c, addr)
 	if got := c.Page(context.Background(), addr); string(got) != "B" {
 		t.Fatalf("got %q", got)
 	}
@@ -126,27 +141,55 @@ func TestCacheStaleAndFallback(t *testing.T) {
 	}
 }
 
-func TestCacheHungFetcherReturnsWithinTimeout(t *testing.T) {
+func TestCacheServesExpiredEntryWithoutWaitingForHungFetcher(t *testing.T) {
 	f, clk := okFetcher("A"), &fakeClock{}
-	c := newTestCache(f, clk)
+	const longTimeout = 2 * time.Second
+	c := NewCache(f, testTTL, testStale, longTimeout, clk.now)
 	c.Page(context.Background(), addr)
+	started := make(chan struct{}, 10)
 	f.fn = func(ctx context.Context, _, _ string) (Result, error) {
+		started <- struct{}{}
 		<-ctx.Done()
 		return Result{}, ctx.Err()
 	}
 	clk.advance(2 * time.Minute)
 
 	start := time.Now()
+	for range 5 {
+		if got := c.Page(context.Background(), addr); string(got) != "A" {
+			t.Fatalf("got %q", got)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("took %v, want the old page without waiting for the fetch", elapsed)
+	}
+	<-started
+	if f.callCount() != 2 {
+		t.Fatalf("calls = %d, want 2 (prime + one background refresh)", f.callCount())
+	}
+	c.mu.Lock()
+	cl := c.inflight[addr]
+	c.mu.Unlock()
+	if cl == nil {
+		t.Fatal("background refresh should still be running")
+	}
+}
+
+func TestCacheWithoutEntryWaitsForHungFetcherUpToTimeout(t *testing.T) {
+	f, clk := okFetcher("A"), &fakeClock{}
+	c := newTestCache(f, clk)
+	f.fn = func(ctx context.Context, _, _ string) (Result, error) {
+		<-ctx.Done()
+		return Result{}, ctx.Err()
+	}
+
+	start := time.Now()
 	got := c.Page(context.Background(), addr)
 	if elapsed := time.Since(start); elapsed > testTimeout+100*time.Millisecond {
 		t.Fatalf("took %v", elapsed)
 	}
-	if string(got) != "A" {
+	if !bytes.Equal(got, FallbackHTML) {
 		t.Fatalf("got %q", got)
-	}
-
-	if got := c.Page(context.Background(), "10.127.0.6"); !bytes.Equal(got, FallbackHTML) {
-		t.Fatalf("unknown address got %q", got)
 	}
 }
 
@@ -170,9 +213,9 @@ func TestCacheCoalescesConcurrentFetches(t *testing.T) {
 			c.Page(context.Background(), addr)
 		}()
 	}
-	time.Sleep(20 * time.Millisecond)
-	close(release)
 	wg.Wait()
+	close(release)
+	waitRefresh(c, addr)
 	if f.callCount() != 2 {
 		t.Fatalf("calls = %d, want 2 (prime + one refresh)", f.callCount())
 	}

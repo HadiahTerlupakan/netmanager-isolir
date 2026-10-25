@@ -44,11 +44,14 @@ func NewCache(f Fetcher, ttl, staleFor, fetchTimeout time.Duration, now func() t
 }
 
 // Page returns the HTML for address. It never fails: when netmanager cannot
-// help it returns an older copy, and past staleFor the fallback page.
+// help it returns an older copy, and past staleFor the fallback page. An entry
+// past ttl but within staleFor is returned at once while one background
+// refresh runs, so a hung netmanager delays only addresses with no usable copy.
 func (c *Cache) Page(ctx context.Context, address string) []byte {
 	c.mu.Lock()
 	e, ok := c.entries[address]
-	if ok && c.now().Sub(e.fetchedAt) < c.ttl {
+	age := c.now().Sub(e.fetchedAt)
+	if ok && age < c.ttl {
 		c.mu.Unlock()
 		return e.html
 	}
@@ -59,6 +62,9 @@ func (c *Cache) Page(ctx context.Context, address string) []byte {
 		go c.refresh(ctx, address, e.etag, cl)
 	}
 	c.mu.Unlock()
+	if ok && age < c.staleFor {
+		return e.html
+	}
 
 	select {
 	case <-cl.done:
@@ -68,7 +74,8 @@ func (c *Cache) Page(ctx context.Context, address string) []byte {
 }
 
 // refresh runs detached from the first caller's cancellation so that waiters
-// sharing the call do not lose the result when that caller goes away.
+// sharing the call, and a background refresh whose caller has already been
+// served, do not lose the result when that caller goes away.
 func (c *Cache) refresh(ctx context.Context, address, etag string, cl *call) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.fetchTimeout)
 	defer cancel()

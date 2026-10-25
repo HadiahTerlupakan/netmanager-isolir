@@ -55,6 +55,9 @@ func TestHTTPFetcherErrors(t *testing.T) {
 		"unauthorized": func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusUnauthorized)
 		},
+		"empty 200": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		},
 		"body over 1 MiB": func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(strings.Repeat("x", 2<<20)))
 		},
