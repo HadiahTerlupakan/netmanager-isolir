@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: netmanager-isolir
+---
+# Secret dibuat manual dan tidak pernah di-apply dari repo:
+#   netmanager-isolir-tls       tls.crt, tls.key (satu sertifikat self-signed)
+#   netmanager-isolir-token     NETMANAGER_TOKEN (sama dengan ISOLIR_SERVICE_TOKEN di netmanager)
+#   netmanager-isolir-registry  kredensial pull GHCR, hanya bila paket image privat
+# {{ISOLIR_IMAGE}} diisi langkah deploy dengan tag <sha12>-<epoch>.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netmanager-isolir
+  namespace: netmanager-isolir
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: netmanager-isolir
+  template:
+    metadata:
+      labels:
+        app: netmanager-isolir
+    spec:
+      imagePullSecrets:
+        - name: netmanager-isolir-registry
+      # externalTrafficPolicy: Local di Service hanya menjawab di node yang
+      # menjalankan pod, dan router isolir menuju alamat node radpro.
+      nodeSelector:
+        kubernetes.io/hostname: radpro
+      automountServiceAccountToken: false
+      containers:
+        - name: isolir
+          image: "{{ISOLIR_IMAGE}}"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: NETMANAGER_URL
+              value: http://netmanager-app.netmanager-production.svc.cluster.local
+            - name: NETMANAGER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: netmanager-isolir-token
+                  key: NETMANAGER_TOKEN
+            - name: TLS_CERT_FILE
+              value: /etc/isolir-tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /etc/isolir-tls/tls.key
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: https
+              containerPort: 8443
+            - name: health
+              containerPort: 8081
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            periodSeconds: 2
+            failureThreshold: 15
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/isolir-tls
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: netmanager-isolir-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netmanager-isolir
+  namespace: netmanager-isolir
+spec:
+  type: NodePort
+  # Local mempertahankan IP sumber asli; tanpa itu pembatas per IP melihat
+  # semua pelanggan sebagai alamat node.
+  externalTrafficPolicy: Local
+  selector:
+    app: netmanager-isolir
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      nodePort: 30880
+    - name: https
+      port: 443
+      targetPort: 8443
+      nodePort: 30443
