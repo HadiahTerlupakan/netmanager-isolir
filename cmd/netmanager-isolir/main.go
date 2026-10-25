@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -22,14 +23,17 @@ const (
 	httpsAddr  = ":8443"
 	healthAddr = ":8081"
 
-	ratePerSec    = 20
-	burst         = 40
-	maxConnsPerIP = 32
+	// All customers behind one router share a source address, so these are
+	// per-router limits.
+	ratePerSec    = 100
+	burst         = 200
+	maxConnsPerIP = 256
 
 	cacheTTL      = 60 * time.Second
 	cacheStaleFor = 24 * time.Hour
 	fetchTimeout  = 3 * time.Second
 	clientTimeout = 5 * time.Second
+	dialTimeout   = 2 * time.Second
 
 	statsInterval   = 5 * time.Minute
 	shutdownTimeout = 5 * time.Second
@@ -57,14 +61,32 @@ func loadConfig(getenv func(string) string) (config, error) {
 	return cfg, nil
 }
 
+// newCustomerServer discards net/http's own error log: nearly every TLS
+// handshake fails because customer apps reject the self-signed certificate,
+// and logging each one would let customers flood the log.
 func newCustomerServer(h http.Handler) *http.Server {
-	return &http.Server{
+	s := &http.Server{
+		ErrorLog:          log.New(io.Discard, "", 0),
 		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       30 * time.Second,
 		MaxHeaderBytes:    8192,
+	}
+	// One connection per request keeps a router's customers from holding the
+	// shared per-IP connection slots open.
+	s.SetKeepAlivesEnabled(false)
+	return s
+}
+
+// fetchTransport has no proxy so that no environment variable can redirect
+// the fetches away from netmanager.
+func fetchTransport() *http.Transport {
+	return &http.Transport{
+		Proxy:               nil,
+		DialContext:         (&net.Dialer{Timeout: dialTimeout}).DialContext,
+		TLSHandshakeTimeout: dialTimeout,
 	}
 }
 
@@ -84,6 +106,7 @@ func main() {
 	// The service must reach netmanager and nothing else, so a redirect is an
 	// answer, never a place to go.
 	client := &http.Client{
+		Transport:     fetchTransport(),
 		Timeout:       clientTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}

@@ -117,7 +117,10 @@ func TestNonIPv4SourceGetsFallbackWithoutLookup(t *testing.T) {
 
 func TestRateLimitIsPerIP(t *testing.T) {
 	pages := &fakePages{}
-	h := newTestHandler(pages, NewLimiter(20, 40, 10))
+	limiter := NewLimiter(20, 40, 10)
+	frozen := time.Unix(1000, 0)
+	limiter.now = func() time.Time { return frozen }
+	h := newTestHandler(pages, limiter)
 	for i := 1; i <= 40; i++ {
 		if rec := serve(h, "GET", "/", "10.127.0.5:1", nil); rec.Code != 200 {
 			t.Fatalf("request %d: status %d", i, rec.Code)
